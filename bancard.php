@@ -1,49 +1,44 @@
 <?php
 class Bancard {
 	
-	var $publicKey;
-	var $privateKey;
-	var $token;
-	var $url;
+	private $publicKey;
+	private $privateKey;
+	private $token;
+	private $userConfig;
+	private $process_id;
+	private $base_url;
+	private $return_url;
+	private $cancel_url;
+	private $cards_url;
+	private static $config;
+	private static $storeName;
+	private static $enviroment;
+	private static $baseAPIUrl;
+	private static $basePaymentUrl;
 	
     function __construct()
     {
 		
 	/*
-		CONEXION A BASE DE DATOS
-		Necesario para guardar las transacciones en la aplicación.
-		Por defecto esta clase utiliza SimplePDO, una librería de conexion y manipulación de datos en MySQL o PgSQL por medio de PDO.
-		
-		Para bajar SimplePDO: https://github.com/rodolrojas/SimplePDO
-	
-		Pueden utilizarse otras clases de conexión (mysql_connect, mysqli, PDO crudo, Active Record, etc.),
-		pero deberán cambiarse todas las funciones que impliquen manipulación de datos de acuerdo a la librería escogida. 
-	*/
-	
-		global $DB;
-		
-		if(!$DB){
-			exit("Se requiere una conexion a base de datos para continuar!");
-		}else{
-			$this->db = $DB;											
-			$this->createTable();												
-		}
-
-	/*
 		CLAVES DE API
 		Estas claves se obtienen del Portal de Comercios de Bancard
 	*/
+		self::$basePaymentUrl = "https://vpos.infonet.com.py/payment/single_buy?process_id=";
+
+		$config = self::loadConfig();		
+
+		self::$enviroment = $config->enviroment;
+		self::$storeName = $config->store->name;
+
+		$this->publicKey = $config->credentials->public;
+		$this->privateKey = $config->credentials->private;
 		
-		$this->publicKey = "";									// CLAVE PUBLICA DE BANCARD
-		$this->privateKey = "";									// CLAVE PRIVADA DE BANCARD
-	
-	/*
-		URLs DE LA PLATAFORMA DE PAGOS
-		Son propios de Bancard. No deben alterarse
-	*/
-		
-		// $this->url = "https://vpos.infonet.com.py";			// PRODUCTION
-		$this->url = "https://vpos.infonet.com.py:8888";		// DEVELOPMENT
+
+		if(@$config->enviroment){
+			self::$baseAPIUrl = "https://vpos.infonet.com.py:8888";		// DEVELOPMENT			
+		}else{
+			self::$baseAPIUrl = "https://vpos.infonet.com.py";			// PRODUCTION
+		}
 		
 	/*
 		URLs de retorno de la Aplicación
@@ -52,34 +47,219 @@ class Bancard {
 		NO DEBEN CONFUNDIRSE CON LA URL DE CONFIRMACIÓN!!!
 	*/
 		
-		$this->description = "Hello World";					// NOMBRE DEL COMERCIO
-		$this->return_url = ROOT_DIR."return.php";			// ROOT_DIR: ES LA DIRECCION RAIZ DE LA APLICACION
-		$this->cancel_url = ROOT_DIR."cancel.php";			// DEBE DEFINIRSE ANTES DE LLAMAR A LA LIBRERIA
+		$this->description = $config->store->name;		
+
+		$this->base_url = $config->store->url;	
+		$this->return_url = $config->store->url."/".$config->callbacks->return;	
+		$this->cancel_url = $config->store->url."/".$config->callbacks->cancel;	
+		$this->cards_url = $config->store->url."/".$config->callbacks->newCard;	
+
+		$this->process_id = null;	
 		
-		// POR EJEMPLO: "http://www.example.com/" (se recomienda definir siempre con una diagonal al final de la URL).
     }
 
-	public function single_buy($userID,$amount,$buyID = false){
+    public function __get($name)
+    {
+    	if($name == "paymentUrl"){
+    		if($this->process_id) return self::$basePaymentUrl.$this->process_id;
+    	}elseif($name == "referer"){
+    		return $this->base_url;
+    	}
+    }
+
+    public static function storeName()
+    {
+		$config = self::loadConfig();	
+    	return (string)$config->store->name;
+    }
+
+    public static function enviroment()
+    {
+		$config = self::loadConfig();	
+    	return (string)$config->enviroment;
+    }
+
+    private static function loadConfig()
+    {
+    	$file = fopen(__DIR__."/config.xml","r");
+    	$xml = fread($file, filesize(__DIR__."/config.xml"));
+    	fclose($file);
+    	$config = new SimpleXMLElement($xml);
+    	return $config;
+    }
+
+
+    private function send($url,$request,$method="GET")
+    {
+
+    	$curl = curl_init();
+		curl_setopt_array($curl, array(
+			CURLOPT_URL => self::$baseAPIUrl.$url,
+			CURLOPT_RETURNTRANSFER => 1,
+			CURLOPT_CUSTOMREQUEST => $method,
+			CURLOPT_POSTFIELDS => json_encode($request)
+		));
 		
-		/*
-			SINGLE BUY: Genera una transacción interna y solicita un proceso de pago a la API de Bancard.
-			
-			Parámetros recibidos:
-			
-			$userID: Es el identificador del cliente que realiza la compra, relacionado con la tabla de clientes de la aplicación.
-			
-			$amount: Es el monto a pagar de la transacción. Por limitaciones del servicio de vPos siempre debe estar en GUARANÍES (PYG).
-					 Si las operaciones en la aplicación son en Dólares deberá hacerse una previa conversión al cambio del día o a una
-					 cotización interna.
-			
-			$buyID: Si la aplicación ya tiene un registro propio de compras se puede utilizar su código de referencia como ID. Opcional
-		*/
+		$resp = curl_exec($curl);
+		$this->handleCurlError(curl_error($curl));
+
+		curl_close($curl);
+
+		$resp = json_decode($resp);
 		
-		$VpMonto = $amount;
-		$UsrCod = $userID;
+		return $resp;
 				
-		$shop_process_id = $this->insert($UsrCod,$VpMonto,$buyID);
+    }
+
+    private function handleCurlError($curlError)
+    {
+    	// var_dump($curlError);
+    	if($curlError != '') throw new Exception("Bancard API Connection Error: {$curlError}", 1);    	
+    }
+    private function handleApiError($data)
+    {
+    	error_log("Bancard Error");
+    	error_log(print_r($data,true));
+    	return true;
+    }
+
+    private function get($url,$request){
+    	return $this->send($url,$request);
+    }
+
+    private function post($url,$request){
+    	return $this->send($url,$request,"POST");
+    }
+
+    private function delete($url,$request){
+    	return $this->send($url,$request,"DELETE");
+    }
+
+	public function getCards($user_id){
+
+		$this->token = md5($this->privateKey . $user_id . "request_user_cards");
 		
+		$request = array(
+			"public_key" => "{$this->publicKey}",
+			"operation" => array(
+				"token" => $this->token
+			)
+		);
+
+		$endpoint = "/vpos/api/0.3/users/{$user_id}/cards";
+
+		$resp = $this->post($endpoint,$request);
+		
+		if(@$resp->status == "success"){
+			return $resp;
+		}else{
+			$this->handleApiError($resp);
+			return false;
+		}		
+	}
+
+	public function newCard($user_id,$user_cell_phone,$user_mail){
+
+		$card_id = $this->maxCardID($user_id) + 1;
+
+		$this->token = md5($this->privateKey . $card_id . $user_id . "request_new_card");
+		
+		$request = array(
+			"public_key" => "{$this->publicKey}",
+			"operation" => array(
+				"token" => $this->token,
+				"card_id" => $card_id,
+				"user_id" => $user_id,
+				"user_cell_phone" => $user_cell_phone,
+				"user_mail" => $user_mail,
+				"return_url" => $this -> base_url."?user_id={$user_id}&card_id={$card_id}",
+			)
+		);
+
+		$queryString = array(
+				"user_id" => $user_id,
+				"user_cell_phone" => $user_cell_phone,
+				"user_mail" => $user_mail
+		);
+
+		$endpoint = "/vpos/api/0.3/cards/new";
+
+		$resp = $this->post($endpoint,$request);
+		
+
+		if(@$resp->status == "success"){
+			return $resp;
+		}else{
+			$this->handleApiError($resp);
+			return false;
+		}		
+	}
+
+	public function removeCard($card_id,$user_id){
+
+		$card = $this->getCard($card_id,$user_id);
+
+		if(!$card){
+			error_log("Lib Error @ Bancard::removeCard => Card Not Found");
+			return false;
+		}
+
+		$this->token = md5($this->privateKey . "delete_card" . $user_id . $card->alias_token);
+		
+		$request = array(
+			"public_key" => "{$this->publicKey}",
+			"operation" => array(
+				"token" => $this->token,
+				"alias_token" => $card->alias_token,
+			)
+		);
+
+		$endpoint = "/vpos/api/0.3/users/{$user_id}/cards";
+
+		$resp = $this->delete($endpoint,$request);
+		
+		// var_dump($resp);
+
+		if(@$resp->status == "success"){
+			return $resp;
+		}else{
+			$this->handleApiError($resp);
+			return false;
+		}		
+	}
+
+	private function getCard($card_id='',$user_id='')
+	{
+		$cards = $this->getCards($user_id);
+
+		foreach ($cards->cards as $cardData) {
+			if($cardData->card_id == $card_id){
+				return $cardData;
+			}
+		}
+
+		return false;
+	}
+
+	private function maxCardID($user_id='')
+	{
+		$cards = $this->getCards($user_id);
+
+		if($cards->cards === []) return 0;
+
+		$maxCardID = 0;
+
+		foreach ($cards->cards as $cardData) {
+			if($cardData->card_id > $maxCardID){
+				$maxCardID = $cardData->card_id;
+			}
+		}
+
+		return $maxCardID;
+	}
+
+	public function single_buy($shop_process_id,$amount){
+				
 		$amount = $amount.".00";
 		$currency = "PYG";
 		$this->token = md5($this->privateKey . $shop_process_id . $amount . $currency);
@@ -95,36 +275,18 @@ class Bancard {
 				"description" => $this->description,
 				"return_url" => $this -> return_url,
 				"cancel_url" => $this -> cancel_url
-			),
-			"test_client" => true
+			)
 		);
+
+		$resp = $this->post("/vpos/api/0.3/single_buy",$request);
 		
-		$curl = curl_init();
-		curl_setopt_array($curl, array(
-			CURLOPT_URL => $this -> url . "/vpos/api/0.3/single_buy",
-			CURLOPT_RETURNTRANSFER => 1,
-			CURLOPT_POST => 1,
-			CURLOPT_POSTFIELDS => json_encode($request)
-		));
-		
-		$resp = curl_exec($curl);
-		curl_close($curl);
-		
-		if(is_string($resp)) $resp = json_decode($resp);
-		
-		if($resp->status == "success"){
-			$shop_process_id = $this->setProcessID($shop_process_id,$resp->process_id);
-			echo "<script> location.href = '".$this->url."/payment/single_buy?process_id=".$resp->process_id."' </script>";
+		if(@$resp->status == "success"){
+			$this->process_id = $resp->process_id;
+			return $resp->process_id;
 		}else{
-			echo "Ocurrió un error al conectar a Bancard!<br/>";
-			echo "<pre>\n";
-				var_dump($request);
-				var_dump($resp);
-			echo "</pre>\n";
-			exit;
-		}
-		
-		// EXAMPLE:  https://vpos.infonet.com.py/payment/single_buy?process_id=1veY2NMX3Od751Lu0sK5 
+			$this->handleApiError($resp);
+			return false;
+		}		
 	}
 	
 	public function getConfirmation($shop_process_id){
@@ -145,8 +307,7 @@ class Bancard {
 			"operation" => array(
 				"token" => $this->token,
 				"shop_process_id" => $shop_process_id
-			),
-			"test_client" => true
+			)
 		);
 		
 		$curl = curl_init();
@@ -218,177 +379,6 @@ class Bancard {
 		
 	}
 	
-	
-	private function insert($UsrCod,$VpMonto,$VpCod = false){
-		
-		/*
-			INSERTAR TRANSACCIÓN: Inserta los datos de la compra en la tabla de transacciones creada previamente por la librería.
-			
-			Parámetros recibidos:
-			
-			$UsrCod: Es el código identificador del cliente.
-			$VpMonto: Es el monto a abonar.
-			$VpCod: Si la aplicación ya generó un identificador de compra, el registro puede agregarse con este codigo como ID. Parámetro Opcional
-			
-			FUNCIÓN PRIVADA: SOLO ES EJECUTADO POR LA CLASE.
-		*/
-		
-		if($VpCod){
-			$sql = "INSERT INTO vpos (VpCod,UsrCod,VpMonto,VpDate) VALUES ('{$VpCod}','{$UsrCod}','{$VpMonto}',NOW())";
-			$result = $this->db->execute($sql);
-			return $VpCod;
-		}else{
-			$sql = "INSERT INTO vpos (UsrCod,VpMonto,VpDate) VALUES ('{$UsrCod}','{$VpMonto}',NOW())";
-			$result = $this->db->execute($sql);
-			
-			$sql = "SELECT * FROM vpos WHERE UsrCod = '{$UsrCod}' ORDER BY VpDate DESC LIMIT 1";
-			$result = $this->db->getObject($sql);
-			return $result->VpCod;			
-		}
-	}
-	
-	private function setProcessID($shop_process_id,$process_id){
-		
-		/*
-			GUARDAR ID DE PROCESO: Una vez que la clase solicita un proceso de pago a la API de Bancard, este lo guarda en la tabla de pagos.
-			
-			Parámetros recibidos:
-			
-			$shop_process_id: Es el código identificador de la transacción.
-			$process_id: Es el identificador del proceso de pago generado por Bancard.
-			
-			FUNCIÓN PRIVADA: SOLO ES EJECUTADO POR LA CLASE.
-		*/
-		
-		$sql = "UPDATE vpos SET process_id = '{$process_id}' WHERE VpCod = '{$shop_process_id}'";
-		$result = $this->db->execute($sql);
-		return $result;
-	}
-	
-	public function confirm($data){
-		
-		/*
-			GUARDAR CONFIRMACIÓN: Al confirmarse la transacción (cuando al cliente le aparece Transacción Aprobada en la plataforma de pago)
-			Bancard envia los datos del pago a la aplicación. Este método guarda dichos datos.
-			
-			Parámetros recibidos:
-			
-			$data: Bancard devuelve un objeto en formato JSON al confirmarse el pago. Dicho objeto debe pasarse convertido en un array.
-		*/
-		
-		$sql = "UPDATE vpos SET 
-					token 							= '{$data['token']}',
-					response 						= '{$data['response']}',
-					response_details 				= '{$data['response_details']}',
-					response_code 					= '{$data['response_code']}',
-					response_description 			= '{$data['response_description']}',
-					extended_response_description 	= '{$data['extended_response_description']}',
-					amount 							= '{$data['amount']}',
-					currency 						= '{$data['currency']}',
-					authorization_number 			= '{$data['authorization_number']}',
-					ticket_number 					= '{$data['ticket_number']}',
-					card_source 					= '{$data['security_information']['card_source']}',
-					customer_ip 					= '{$data['security_information']['customer_ip']}',
-					card_country 					= '{$data['security_information']['card_country']}',
-					version 						= '{$data['security_information']['version']}',
-					risk_index 						= '{$data['security_information']['risk_index']}'
-				WHERE VpCod = '{$data['shop_process_id']}'";
-				
-		// echo "\n{$sql}\n";
-		$result = $this->db->execute($sql);
-		return $result;
-	}
-
-	public function lastBuy($UsrCod){
-		
-		/*
-			ÚLTIMA TRANSACCIÓN: Obtiene la última transacción de un cliente.
-			Parámetros recibidos:
-			
-			$UsrCod: Es el identificador del cliente.
-		*/
-		
-		$sql = "SELECT * FROM vpos WHERE UsrCod = '{$UsrCod}' ORDER BY VpDate DESC LIMIT 1";
-		$result = $this->db->getObject($sql);
-		return $result[0];
-	}
-
-	private function saveRollback($data){
-		
-		/*
-			GUARDAR ROLLBACK: Guarda los resultados de la solicitud de rollback de una transacción. Opera de la misma forma que GUARDAR CONFIRMACIÓN
-			
-			Parámetros recibidos:
-			
-			$data: Bancard devuelve un objeto en formato JSON al ejecutar el rollback. Dicho objeto debe pasarse convertido en un array.
-			
-			FUNCIÓN PRIVADA: SOLO ES EJECUTADO POR LA CLASE.
-		*/
-		
-		$sql = "UPDATE vpos SET 
-					token 							= '{$data['token']}',
-					RbStatus 						= '{$data['status']}',
-					RbKey 							= '{$data['messages']['key']}',
-					RbLevel 						= '{$data['messages']['level']}',
-					RbDescription 					= '{$data['messages']['dsc']}'
-				WHERE VpCod = '{$data['shop_process_id']}'";
-		$result = $this->db->execute($sql);
-		return $result;
-	}
-	
-	private function createTable(){
-		
-		/*
-			CREAR TABLA: Crea la tabla de registro de transacciones. Verifica si dicha tabla ya ha sido creada
-			
-			Parámetros recibidos: ninguno.
-			
-			FUNCIÓN PRIVADA: SOLO ES EJECUTADO POR LA CLASE.
-		*/
-		
-		$sql = "SELECT *
-				FROM information_schema.tables
-				WHERE table_schema = '{$this->db->getDBName()}'
-				AND table_name = 'vpos'";
-		
-		$result = $this->db->countRows($sql);
-		
-		if($result == 0){
-			
-			$sql = "CREATE TABLE `vpos` (
-					 `VpCod` int(8) NOT NULL AUTO_INCREMENT,
-					 `UsrCod` int(8) NOT NULL,
-					 `VpMonto` bigint(25) NOT NULL,
-					 `VpDate` datetime DEFAULT NULL,
-					 `VpStatus` enum('pendiente','aprobado','rechazado','cancelado') NOT NULL DEFAULT 'pendiente',
-					 `VpOrigin` varchar(255) NOT NULL,
-					 `process_id` varchar(255) DEFAULT NULL,
-					 `token` varchar(256) DEFAULT NULL,
-					 `response` varchar(256) DEFAULT NULL,
-					 `response_details` varchar(256) DEFAULT NULL,
-					 `extended_response_description` varchar(256) DEFAULT NULL,
-					 `currency` varchar(256) DEFAULT NULL,
-					 `amount` varchar(256) DEFAULT NULL,
-					 `authorization_number` varchar(256) DEFAULT NULL,
-					 `ticket_number` varchar(256) DEFAULT NULL,
-					 `response_code` varchar(256) DEFAULT NULL,
-					 `response_description` varchar(256) DEFAULT NULL,
-					 `customer_ip` varchar(256) DEFAULT NULL,
-					 `card_source` varchar(256) DEFAULT NULL,
-					 `card_country` varchar(256) DEFAULT NULL,
-					 `version` varchar(256) DEFAULT NULL,
-					 `risk_index` int(8) DEFAULT NULL,
-					 `RbStatus` varchar(255) DEFAULT NULL,
-					 `RbKey` varchar(255) DEFAULT NULL,
-					 `RbLevel` varchar(255) DEFAULT NULL,
-					 `RbDescription` varchar(255) DEFAULT NULL,
-					 PRIMARY KEY (`VpCod`)
-					) ENGINE=InnoDB DEFAULT CHARSET=latin1";
-
-			$result = $this->db->execute($sql);
-		}
-
-	}
  }
 
 ?>

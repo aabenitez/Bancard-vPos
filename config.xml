@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+	<bancard>
+		<store>
+			<name>Aroma y Body</name>
+			<url>http://aromaybody.localhost/bancard/</url>
+		</store>
+		<enviroment>0</enviroment>
+		<credentials>
+			<public>mL9YuhvCqfQPwpL9Ha8RyHxLmhpHXmge</public>
+			<private>YFcN+DSsmq5m6X8(8OF.3sFpH.Y235ANJ3s5b$TW</private>
+		</credentials>
+		<callbacks>
+			<return>/bancard/standard/success/{{order}}</return>
+			<cancel>/bancard/standard/cancel/{{order}}</cancel>
+		</callbacks>
+	</bancard>
